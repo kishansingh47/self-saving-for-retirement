@@ -19,6 +19,10 @@ from app.core.time_utils import parse_timestamp_to_epoch
 
 logger = logging.getLogger(__name__)
 
+CHALLENGE_AMOUNT_LIMIT = 500000
+MONEY_TOLERANCE = 0.01
+FLOAT_EPSILON = 1e-9
+
 
 def _to_float(value: object, field_name: str) -> float:
     if value is None:
@@ -43,7 +47,7 @@ def _canonical_transaction(
     amount = _to_float(transaction.get("amount"), "amount")
     if amount < 0:
         raise ValueError("Amount cannot be negative.")
-    if enforce_amount_limit and amount >= 500000:
+    if enforce_amount_limit and amount >= CHALLENGE_AMOUNT_LIMIT:
         raise ValueError("Amount must be < 500000 as per challenge constraints.")
 
     if require_ceiling_and_remanent:
@@ -185,14 +189,14 @@ def _build_periods(periods: list[dict], kind: str) -> list[dict]:
             fixed = _to_float(period.get("fixed"), "fixed")
             if fixed < 0:
                 raise ValueError("q.fixed cannot be negative.")
-            if fixed >= 500000:
+            if fixed >= CHALLENGE_AMOUNT_LIMIT:
                 raise ValueError("q.fixed must be < 500000 as per challenge constraints.")
             built_period["value"] = money(fixed)
         elif kind == "p":
             extra = _to_float(period.get("extra"), "extra")
             if extra < 0:
                 raise ValueError("p.extra cannot be negative.")
-            if extra >= 500000:
+            if extra >= CHALLENGE_AMOUNT_LIMIT:
                 raise ValueError("p.extra must be < 500000 as per challenge constraints.")
             built_period["value"] = money(extra)
 
@@ -210,7 +214,7 @@ def build_transactions(expenses: list[dict]) -> dict:
         amount = _to_float(expense.get("amount"), "amount")
         if amount < 0:
             raise ValueError("Expense amount cannot be negative.")
-        if amount >= 500000:
+        if amount >= CHALLENGE_AMOUNT_LIMIT:
             raise ValueError("Expense amount must be < 500000 as per constraints.")
         ceiling = next_multiple_of_100(amount)
         remanent = money(ceiling - amount)
@@ -271,7 +275,7 @@ def validate_transactions(
 
         expected_ceiling = next_multiple_of_100(tx["amount"])
         expected_remanent = money(expected_ceiling - tx["amount"])
-        if abs(tx["ceiling"] - expected_ceiling) > 0.01:
+        if abs(tx["ceiling"] - expected_ceiling) > MONEY_TOLERANCE:
             invalid.append(
                 _invalid_output(
                     tx,
@@ -280,7 +284,7 @@ def validate_transactions(
                 )
             )
             continue
-        if abs(tx["remanent"] - expected_remanent) > 0.01:
+        if abs(tx["remanent"] - expected_remanent) > MONEY_TOLERANCE:
             invalid.append(
                 _invalid_output(
                     tx,
@@ -289,7 +293,7 @@ def validate_transactions(
                 )
             )
             continue
-        if tx["remanent"] > 500000:
+        if tx["remanent"] > CHALLENGE_AMOUNT_LIMIT:
             invalid.append(
                 _invalid_output(
                     tx,
@@ -304,7 +308,7 @@ def validate_transactions(
     running_investment = 0.0
     valid: list[dict] = []
     for tx in valid_candidates:
-        if running_investment + tx["remanent"] > limit + 1e-9:
+        if running_investment + tx["remanent"] > limit + FLOAT_EPSILON:
             invalid.append(
                 _invalid_output(
                     tx,
@@ -540,7 +544,10 @@ def _membership_in_k(
 
 
 def filter_transactions(
-    transactions: list[dict], q_periods: list[dict], p_periods: list[dict], k_periods: list[dict]
+    transactions: list[dict],
+    q_periods: list[dict],
+    p_periods: list[dict],
+    k_periods: list[dict],
 ) -> dict:
     canonical_transactions: list[dict] = []
     invalid: list[dict] = []
@@ -605,7 +612,11 @@ def aggregate_savings_by_k(
     if not k_periods:
         return []
 
-    ordered_transactions = transactions if is_sorted else sorted(transactions, key=lambda tx: tx["epoch"])
+    ordered_transactions = (
+        transactions
+        if is_sorted
+        else sorted(transactions, key=lambda tx: tx["epoch"])
+    )
     times = [tx["epoch"] for tx in ordered_transactions]
 
     prefix = [0.0]
@@ -627,7 +638,9 @@ def aggregate_savings_by_k(
     return savings
 
 
-def build_period_payload(q: list[dict], p: list[dict], k: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+def build_period_payload(
+    q: list[dict], p: list[dict], k: list[dict]
+) -> tuple[list[dict], list[dict], list[dict]]:
     q_periods = _build_periods(q, "q")
     p_periods = _build_periods(p, "p")
     k_periods = _build_periods(k, "k")
@@ -651,7 +664,9 @@ def calculate_returns(
         raise ValueError("Wage cannot be negative.")
     normalized_inflation = _normalize_inflation_rate(inflation)
 
-    canonical_transactions, invalid_count, duplicate_count = _prepare_returns_transactions(transactions)
+    canonical_transactions, invalid_count, duplicate_count = _prepare_returns_transactions(
+        transactions
+    )
     if invalid_count or duplicate_count:
         logger.warning(
             "returns input filtered: invalid=%s duplicate=%s valid=%s",
@@ -671,7 +686,9 @@ def calculate_returns(
         p_periods,
         ordered_indices=ordered_indices,
     )
-    ordered_adjusted_transactions = [adjusted_transactions[index] for index in ordered_indices]
+    ordered_adjusted_transactions = [
+        adjusted_transactions[index] for index in ordered_indices
+    ]
     savings = aggregate_savings_by_k(
         ordered_adjusted_transactions,
         k_periods,
@@ -683,13 +700,17 @@ def calculate_returns(
     savings_by_dates: list[dict] = []
 
     for period_saving in savings:
-        nominal_return, real_return, profit = compute_real_return(
+        _, _, profit = compute_real_return(
             invested_amount=period_saving["amount"],
             annual_rate=rate,
             inflation_rate=normalized_inflation,
             years=years,
         )
-        tax_benefit = nps_tax_benefit(period_saving["amount"], wage) if instrument == "nps" else 0.0
+        tax_benefit = (
+            nps_tax_benefit(period_saving["amount"], wage)
+            if instrument == "nps"
+            else 0.0
+        )
         savings_by_dates.append(
             {
                 "start": period_saving["start"],
@@ -701,7 +722,11 @@ def calculate_returns(
         )
 
     return {
-        "transactionsTotalAmount": money(sum(tx["amount"] for tx in canonical_transactions)),
-        "transactionsTotalCeiling": money(sum(tx["ceiling"] for tx in canonical_transactions)),
+        "transactionsTotalAmount": money(
+            sum(tx["amount"] for tx in canonical_transactions)
+        ),
+        "transactionsTotalCeiling": money(
+            sum(tx["ceiling"] for tx in canonical_transactions)
+        ),
         "savingsByDates": savings_by_dates,
     }

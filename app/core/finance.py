@@ -4,9 +4,18 @@ from decimal import Decimal, ROUND_CEILING
 
 
 HUNDRED = Decimal("100")
+TWELVE = Decimal("12")
 NPS_RATE = Decimal("0.0711")
 INDEX_RATE = Decimal("0.1449")
 NPS_ABSOLUTE_DEDUCTION_CAP = Decimal("200000")
+TAX_SLAB_1_MAX = Decimal("700000")
+TAX_SLAB_2_MAX = Decimal("1000000")
+TAX_SLAB_3_MAX = Decimal("1200000")
+TAX_SLAB_4_MAX = Decimal("1500000")
+TAX_RATE_10 = Decimal("0.10")
+TAX_RATE_15 = Decimal("0.15")
+TAX_RATE_20 = Decimal("0.20")
+TAX_RATE_30 = Decimal("0.30")
 
 
 def to_decimal(value: float | int | str) -> Decimal:
@@ -32,33 +41,33 @@ def remanent_from_amount(amount: float) -> float:
 
 def compute_tax(income: float) -> float:
     annual_income = to_decimal(max(0, income))
-    if annual_income <= Decimal("700000"):
+    if annual_income <= TAX_SLAB_1_MAX:
         return 0.0
-    if annual_income <= Decimal("1000000"):
-        return money((annual_income - Decimal("700000")) * Decimal("0.10"))
-    if annual_income <= Decimal("1200000"):
+    if annual_income <= TAX_SLAB_2_MAX:
+        return money((annual_income - TAX_SLAB_1_MAX) * TAX_RATE_10)
+    if annual_income <= TAX_SLAB_3_MAX:
         return money(
-            Decimal("30000") + (annual_income - Decimal("1000000")) * Decimal("0.15")
+            Decimal("30000") + (annual_income - TAX_SLAB_2_MAX) * TAX_RATE_15
         )
-    if annual_income <= Decimal("1500000"):
+    if annual_income <= TAX_SLAB_4_MAX:
         return money(
-            Decimal("60000") + (annual_income - Decimal("1200000")) * Decimal("0.20")
+            Decimal("60000") + (annual_income - TAX_SLAB_3_MAX) * TAX_RATE_20
         )
     return money(
-        Decimal("120000") + (annual_income - Decimal("1500000")) * Decimal("0.30")
+        Decimal("120000") + (annual_income - TAX_SLAB_4_MAX) * TAX_RATE_30
     )
 
 
 def nps_tax_benefit(invested_amount: float, monthly_wage: float) -> float:
-    annual_income = to_decimal(monthly_wage) * Decimal("12")
+    annual_income = to_decimal(monthly_wage) * TWELVE
     deduction = min(
         to_decimal(invested_amount),
-        annual_income * Decimal("0.10"),
+        annual_income * TAX_RATE_10,
         NPS_ABSOLUTE_DEDUCTION_CAP,
     )
-    before = compute_tax(float(annual_income))
-    after = compute_tax(float(annual_income - deduction))
-    return money(before - after)
+    tax_before = compute_tax(float(annual_income))
+    tax_after = compute_tax(float(annual_income - deduction))
+    return money(tax_before - tax_after)
 
 
 def years_to_investment_horizon(age: int) -> int:
