@@ -82,30 +82,30 @@ This section explains the implementation strategy, boundary handling, and runtim
   - Aggregation by `k` is efficient (`O(k log n)` for prefix/bisect path).
 
 ## Boundary Conditions and Validation
-- Timestamp rules:
-  - Accepted format: `YYYY-MM-DD HH:mm:ss` (also supports `YYYY-MM-DD HH:mm` and normalizes seconds).
-  - Period ranges are inclusive.
-  - `k` ranges cannot span multiple years.
-- Transaction amount rules:
-  - Negative amounts are invalid.
-  - `amount` must be `< 500000` when constraint enforcement is enabled.
-  - Duplicates are detected by timestamp (`date`/`timestamp`) as per challenge uniqueness rule.
-- `q`/`p` bounds:
-  - `q.fixed` must be non-negative and `< 500000`.
-  - `p.extra` must be non-negative and `< 500000`.
-- `q` precedence:
-  - If multiple `q` ranges match, latest start date wins.
-  - If starts are the same, first period in list wins.
-- Returns behavior:
-  - Returns endpoints compute using the valid subset of transactions.
-  - Invalid/duplicate transactions are filtered internally (with warning logs).
-  - If no valid transactions remain, the endpoint returns `400`.
-- Inflation interpretation:
-  - `inflation > 1` is treated as percent (`5.5` -> `0.055`).
-  - `inflation <= 1` is treated as decimal rate.
-- NPS tax benefit:
-  - Deduction uses `min(invested_amount, 10% of annual income, 200000)`.
-  - Tax slab logic follows challenge simplification in `finance.py`.
+Validation is enforced in two layers:
+- FastAPI/Pydantic request parsing (`422` on malformed JSON or schema/type mismatch)
+- Engine business-rule checks (`400` with explicit validation message)
+
+| Area | Validation Rule | Failure Behavior | Implemented In |
+|---|---|---|---|
+| JSON and schema | Invalid JSON, missing required top-level fields, wrong structural types | `422 Unprocessable Content` | FastAPI + Pydantic models in `app/models/schemas.py` |
+| Timestamp format | Must be `YYYY-MM-DD HH:mm:ss` (or `YYYY-MM-DD HH:mm`, normalized to seconds) | `400` with format error | `app/core/time_utils.py` |
+| Transaction timestamp presence | Each transaction/expense must have `date` or `timestamp` | `400` | `_canonical_transaction`, `build_transactions` in `app/core/engine.py` |
+| Transaction numeric parsing | Numeric fields (`amount`, `ceiling`, `remanent`, `fixed`, `extra`) must be numeric | `400` | `_to_float` in `app/core/engine.py` |
+| Amount bounds | `amount >= 0` and `amount < 500000` (strict challenge bound) | `400` | `_canonical_transaction`, `build_transactions` in `app/core/engine.py` |
+| Ceiling/remanent consistency (validator) | `ceiling >= amount`, `remanent >= 0`, and exact checks: `ceiling == nextMultipleOf100(amount)`, `remanent == ceiling - amount` | Transaction moved to `invalid[]` with message | `validate_transactions` in `app/core/engine.py` |
+| Duplicate detection | Duplicate transaction timestamp (`date`/`timestamp`) | `transactions:validator`: moved to `duplicates[]`; `transactions:filter`: moved to `invalid[]`; returns endpoints: dropped from calculation with warning log | `validate_transactions`, `filter_transactions`, `_prepare_returns_transactions` in `app/core/engine.py` |
+| Wage/limit checks | `wage >= 0`; `maxInvestment` (if provided) must be non-negative | `400` | `validate_transactions` in `app/core/engine.py` |
+| Cumulative investment limit | Running sum of remanent cannot exceed max investment (default `wage * 12`) | Transaction moved to `invalid[]` | `validate_transactions` in `app/core/engine.py` |
+| Period validity (`q/p/k`) | `start` and `end` required; `start <= end`; `k` cannot span multiple years | `400` | `_build_periods` in `app/core/engine.py` |
+| Period bounds (`q/p`) | `q.fixed >= 0` and `< 500000`; `p.extra >= 0` and `< 500000` | `400` | `_build_periods` in `app/core/engine.py` |
+| `q` precedence | If multiple `q` periods match: latest `start` wins; tie-breaker = earlier list index | Deterministic override selection | `_q_overrides_heap`, `_q_overrides_dsu` in `app/core/engine.py` |
+| `k` membership in filter | Transactions outside all `k` ranges are invalid in `transactions:filter` | Transaction moved to `invalid[]` with message | `filter_transactions` in `app/core/engine.py` |
+| Non-positive adjusted remanent | Transactions with adjusted remanent `<= 0` are excluded from `valid[]` in filter | Skipped from valid output | `filter_transactions` in `app/core/engine.py` |
+| Returns input sanitation | Invalid/duplicate transactions are filtered and computation continues with valid subset | Warning logged; if no valid transactions remain, `400` | `_prepare_returns_transactions`, `calculate_returns` in `app/core/engine.py` |
+| Returns scalar checks | `age >= 0`, `wage >= 0`, `inflation >= 0` | `400` | `calculate_returns`, `_normalize_inflation_rate` in `app/core/engine.py` |
+| Inflation interpretation | `inflation > 1` is interpreted as percent (`5.5 -> 0.055`), else decimal | Normalized before return math | `_normalize_inflation_rate` in `app/core/engine.py` |
+| NPS tax benefit cap | Deduction is `min(invested, 10% annual income, 200000)` | Applied in output computation | `nps_tax_benefit` in `app/core/finance.py` |
 
 ## Endpoint Notes
 - `transactions:parse`
